@@ -11,9 +11,7 @@ import java.io.PrintWriter;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class MonitoringServer {
 
@@ -26,6 +24,9 @@ public class MonitoringServer {
     private int subscriptionsCount;
     private final Object subscriptionsCountLock;
 
+    private final List<PrintWriter> brokerSocketWriters;
+    private final Object brokerSocketWritersLock;
+
     public MonitoringServer() {
         this.running = false;
         this.runningLock = new Object();
@@ -35,6 +36,9 @@ public class MonitoringServer {
 
         this.subscriptionsCount = 0;
         this.subscriptionsCountLock = new Object();
+
+        this.brokerSocketWriters = new ArrayList<>();
+        this.brokerSocketWritersLock = new Object();
     }
 
     public void start(int port) throws IOException {
@@ -100,19 +104,19 @@ public class MonitoringServer {
 
     private void removeBrokerFromConnectionsMap(BrokerInfo brokerInfo) {
         synchronized (this.brokerSubscriptionsMapLock) {
-            int previousConnectionsCount = this.brokerSubscriptionsMap.get(brokerInfo);
+            int previousSubscriptionsCount = this.brokerSubscriptionsMap.get(brokerInfo);
             this.brokerSubscriptionsMap.remove(brokerInfo);
 
             synchronized (this.subscriptionsCountLock) {
-                this.subscriptionsCount -= subscriptionsCount;
+                this.subscriptionsCount -= previousSubscriptionsCount;
             }
         }
     }
 
     private void incrementBrokerSubscriptionsMap(BrokerInfo brokerInfo, int subscriptionsCount) {
         synchronized (this.brokerSubscriptionsMapLock) {
-            int previousConnectionsCount = this.brokerSubscriptionsMap.get(brokerInfo);
-            this.brokerSubscriptionsMap.put(brokerInfo, previousConnectionsCount + subscriptionsCount);
+            int previousSubscriptionsCount = this.brokerSubscriptionsMap.get(brokerInfo);
+            this.brokerSubscriptionsMap.put(brokerInfo, previousSubscriptionsCount + subscriptionsCount);
 
             synchronized (this.subscriptionsCountLock) {
                 this.subscriptionsCount += subscriptionsCount;
@@ -122,8 +126,8 @@ public class MonitoringServer {
 
     private void decrementBrokerSubscriptionsMap(BrokerInfo brokerInfo, int subscriptionsCount) {
         synchronized (this.brokerSubscriptionsMapLock) {
-            int previousConnectionsCount = this.brokerSubscriptionsMap.get(brokerInfo);
-            this.brokerSubscriptionsMap.put(brokerInfo, previousConnectionsCount - subscriptionsCount);
+            int previousSubscriptionsCount = this.brokerSubscriptionsMap.get(brokerInfo);
+            this.brokerSubscriptionsMap.put(brokerInfo, previousSubscriptionsCount - subscriptionsCount);
 
             synchronized (this.subscriptionsCountLock) {
                 this.subscriptionsCount -= subscriptionsCount;
@@ -146,23 +150,49 @@ public class MonitoringServer {
         }
 
         switch (monitoringClientType) {
-            case BROKER: this.handleBrokerClient(clientSocket, in); break;
+            case BROKER: this.handleBrokerClient(clientSocket, in, out); break;
             case SUBSCRIBER: this.handleSubscriberClient(clientSocket, in, out); break;
         }
     }
 
-    private void handleBrokerClient(Socket clientSocket, BufferedReader in) throws IOException {
+    private void announceBrokersOfNewMember(BrokerInfo brokerInfo, PrintWriter brokerOut) {
+        synchronized (this.brokerSocketWritersLock) {
+            for (PrintWriter out: this.brokerSocketWriters) {
+                out.println(BrokerMessage.BROKER_CONNECTED);
+                out.println(brokerInfo.getIp());
+                out.println(brokerInfo.getBrokersServerPort());
+            }
+
+            this.brokerSocketWriters.add(brokerOut);
+        }
+    }
+
+    private void announceBrokersMemberQuit(BrokerInfo brokerInfo, PrintWriter brokerOut) {
+        synchronized (this.brokerSocketWritersLock) {
+            this.brokerSocketWriters.remove(brokerOut);
+
+            for (PrintWriter out: this.brokerSocketWriters) {
+                out.println(BrokerMessage.BROKER_DISCONNECTED);
+                out.println(brokerInfo.getIp());
+                out.println(brokerInfo.getBrokersServerPort());
+            }
+        }
+    }
+
+    private void handleBrokerClient(Socket clientSocket, BufferedReader in, PrintWriter out) throws IOException {
         // Add broker to brokers map
-        String ip = ((InetSocketAddress)clientSocket.getRemoteSocketAddress()).getAddress().toString();
-        int port;
+        String ip = ((InetSocketAddress) clientSocket.getRemoteSocketAddress()).getAddress().toString();
+        int subscribersServerPort;
+        int brokersServerPort;
         try {
-            port = Integer.parseInt(in.readLine());
+            subscribersServerPort = Integer.parseInt(in.readLine());
+            brokersServerPort = Integer.parseInt(in.readLine());
         } catch (IOException e) {
             clientSocket.close();
             System.out.println("Broker disconnected from monitoring server");
             return;
         }
-        BrokerInfo brokerInfo = new BrokerInfo(ip, port);
+        BrokerInfo brokerInfo = new BrokerInfo(ip, subscribersServerPort, brokersServerPort);
         try {
             this.addBrokerToConnectionsMap(brokerInfo);
         } catch (RuntimeException e) {
@@ -171,6 +201,8 @@ public class MonitoringServer {
             System.out.println("Failed to add broker to brokers map, on monitoring server");
             return;
         }
+        // Announce other brokers regarding the new broker
+        this.announceBrokersOfNewMember(brokerInfo, out);
         System.out.println("Broker connected to monitoring server");
 
         // Get messages from broker regarding subscriber connections
@@ -181,6 +213,7 @@ public class MonitoringServer {
             } catch (Exception e) {
                 clientSocket.close();
                 this.removeBrokerFromConnectionsMap(brokerInfo);
+                this.announceBrokersMemberQuit(brokerInfo, out);
                 System.out.println("Broker disconnected from monitoring server");
                 return;
             }
@@ -191,6 +224,7 @@ public class MonitoringServer {
             } catch (Exception e) {
                 clientSocket.close();
                 this.removeBrokerFromConnectionsMap(brokerInfo);
+                this.announceBrokersMemberQuit(brokerInfo, out);
                 System.out.println("Broker disconnected from monitoring server");
                 return;
             }
@@ -241,7 +275,7 @@ public class MonitoringServer {
         for (BrokerInfo brokerInfo: subscriptionsToAddPerBroker.keySet()) {
             int subscriptionsToAdd = subscriptionsToAddPerBroker.get(brokerInfo);
             out.println(brokerInfo.getIp());
-            out.println(brokerInfo.getPort());
+            out.println(brokerInfo.getSubscribersServerPort());
             out.println(subscriptionsToAdd);
         }
         // Send acknowledgement to subscriber

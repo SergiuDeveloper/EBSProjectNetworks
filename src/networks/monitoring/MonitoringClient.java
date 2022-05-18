@@ -12,6 +12,7 @@ import java.net.Socket;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
 
 public class MonitoringClient {
 
@@ -25,7 +26,7 @@ public class MonitoringClient {
         this.monitoringClientType = monitoringClientType;
     }
 
-    public void connectBroker(String ip, int port, int brokerSubscriptionsServerPort) throws IOException {
+    public void connectBroker(String ip, int port, int brokerSubscriptionsServerPort, int brokerBrokersServerPort, Function<BrokerInfo, Void> brokerConnectedCallback, Function<BrokerInfo, Void> brokerDisconnectedCallback) throws IOException {
         if (this.monitoringClientType != MonitoringClientType.BROKER) {
             throw new RuntimeException("Monitoring client is not broker");
         }
@@ -34,7 +35,7 @@ public class MonitoringClient {
         this.in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
         this.out = new PrintWriter(clientSocket.getOutputStream(), true);
 
-        this.brokerLogic(brokerSubscriptionsServerPort);
+        this.brokerLogic(brokerSubscriptionsServerPort, brokerBrokersServerPort, brokerConnectedCallback, brokerDisconnectedCallback);
     }
 
     public Map<BrokerInfo, Integer> connectSubscriber(String ip, int port, int newSubscriptionsCount) throws IOException {
@@ -67,8 +68,28 @@ public class MonitoringClient {
         this.out.println(subscriptionsAdded);
     }
 
-    private void brokerLogic(int brokerSubscriptionsServerPort) {
+    private void brokerLogic(int brokerSubscriptionsServerPort, int brokerBrokersServerPort, Function<BrokerInfo, Void> brokerConnectedCallback, Function<BrokerInfo, Void> brokerDisconnectedCallback) {
         this.out.println(brokerSubscriptionsServerPort);
+        this.out.println(brokerBrokersServerPort);
+
+        Thread receiveMonitoringUpdatesThread = new Thread(() -> {
+            while (true) {
+                try {
+                    BrokerMessage brokerMessage = BrokerMessage.valueOf(this.in.readLine());
+                    String externalBrokerIp = this.in.readLine();
+                    int externalBrokerBrokersServerPort = Integer.parseInt(this.in.readLine());
+                    BrokerInfo externalBroker = new BrokerInfo(externalBrokerIp, -1, externalBrokerBrokersServerPort);
+
+                    switch (brokerMessage) {
+                        case BROKER_CONNECTED: brokerConnectedCallback.apply(externalBroker); break;
+                        case BROKER_DISCONNECTED: brokerDisconnectedCallback.apply(externalBroker); break;
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        });
+        receiveMonitoringUpdatesThread.start();
     }
 
     private Map<BrokerInfo, Integer> subscriberLogic(int newSubscriptionsCount) throws IOException {
@@ -81,10 +102,10 @@ public class MonitoringClient {
             if (Objects.equals(brokerIp, "Done")) {
                 break;
             }
-            int brokerPort = Integer.parseInt(this.in.readLine());
+            int subscriptionsServerPort = Integer.parseInt(this.in.readLine());
             int subscriptionsToAdd = Integer.parseInt(this.in.readLine());
 
-            BrokerInfo brokerInfo = new BrokerInfo(brokerIp, brokerPort);
+            BrokerInfo brokerInfo = new BrokerInfo(brokerIp, subscriptionsServerPort, -1);
             subscriptionsToAddPerBroker.put(brokerInfo, subscriptionsToAdd);
         }
         this.out.println("Done");

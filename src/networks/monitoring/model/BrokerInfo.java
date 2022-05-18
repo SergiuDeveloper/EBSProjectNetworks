@@ -4,26 +4,33 @@ import java.util.Objects;
 
 public class BrokerInfo {
     private final String ip;
-    private final int port;
+    private final int subscribersServerPort;
+    private final int brokersServerPort;
 
-    public BrokerInfo(String ip, int port) {
+    public BrokerInfo(String ip, int subscribersServerPort, int brokersServerPort) {
         this.ip = ip;
-        this.port = port;
+        this.subscribersServerPort = subscribersServerPort;
+        this.brokersServerPort = brokersServerPort;
     }
 
     public String getIp() {
         return this.ip;
     }
 
-    public int getPort() {
-        return this.port;
+    public int getSubscribersServerPort() {
+        return this.subscribersServerPort;
+    }
+
+    public int getBrokersServerPort() {
+        return this.brokersServerPort;
     }
 
     @Override
     public String toString() {
         return "BrokerInfo{" +
                 "ip='" + ip + '\'' +
-                ", port=" + port +
+                ", subscribersServerPort=" + subscribersServerPort +
+                ", brokersServerPort=" + brokersServerPort +
                 '}';
     }
 
@@ -32,11 +39,11 @@ public class BrokerInfo {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         BrokerInfo that = (BrokerInfo) o;
-        return port == that.port && ip.equals(that.ip);
+        return subscribersServerPort == that.subscribersServerPort && brokersServerPort == that.brokersServerPort && ip.equals(that.ip);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(ip, port);
+        return Objects.hash(ip, subscribersServerPort, brokersServerPort);
     }
 }
